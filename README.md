@@ -1,11 +1,14 @@
 # WeatherNext 3 terminal viewer
 
-Charm-based interactive terminal UI for browsing WeatherNext forecast JSON and
-querying the Python worker. This repository contains the Go application only;
-it deliberately excludes the Python client, credentials, saved forecasts, and
-local configuration.
+Charm-based, full-screen terminal UI for WeatherNext 3. The application is
+implemented in Go and calls Google's OAuth, BigQuery, Service Usage, API Keys,
+and Geocoding APIs directly. Runtime use does not require Python, `gcloud`, or
+the Google Cloud SDK. Account credentials and local application state stay on
+the user's computer, outside the repository.
 
 The app uses a full-screen, pane-based layout with resize-aware wrapping.
+On first launch it completes Google sign-in before opening any saved forecast;
+then it asks for the user's target project ID, dataset, and table.
 
 ## Google Cloud setup
 
@@ -82,38 +85,81 @@ The fully qualified table has this form:
 <project-id>.<dataset-id>.weathernext_3_0_0_0p1deg
 ```
 
-In the TUI, open **Settings** and enter the Project ID, Dataset ID, and Table
-ID into their separate fields. A Project ID detected in Application Default
-Credentials is only a suggestion; it may not be the project where you created
-the linked dataset. Press **Ctrl+T** to check table metadata without running a
-forecast query. Forecast refreshes can incur BigQuery charges, so configure a
-maximum bytes billed in Settings before pressing `r`.
+In the TUI, enter the Project ID, Dataset ID, and Table ID into their separate
+fields. These IDs are supplied explicitly because a Google account does not
+identify which shared dataset you subscribed to. Press **Ctrl+T** to check table
+metadata without running a forecast query. Forecast refreshes can incur
+BigQuery charges, so configure a maximum bytes billed in Settings before
+pressing `r`.
+
+The app reads the dataset's region automatically. After target access is
+verified, it also tries to enable the API Keys and Geocoding APIs and create a
+Geocoding-restricted Maps key. If that setup is denied, the signed-in account
+needs Service Usage Admin and API Keys Admin on the target project, and that
+project must have billing enabled. Location search then works without asking
+the user to supply a Maps key.
+
+### 5. Configure the app's OAuth client (one-time maintainer setup)
+
+This registers the application once. Users of the resulting binary only sign
+in with Google, then enter their own WeatherNext project, dataset, and table.
+
+1. In Cloud Console, select the project used for this app, then open **Google
+   Auth Platform → Branding** and register the app with a name, support email,
+   and developer contact email.
+2. Open **Audience**. For a personal test build, choose **External**, leave the
+   publishing status as **Testing**, and add your Google account as a test user.
+   Testing authorizations expire after seven days. Long-term distribution may
+   require publishing and Google's OAuth verification for the requested scope.
+3. Open **Data Access** and add
+   `https://www.googleapis.com/auth/cloud-platform`.
+4. Open **Clients → Create client**, choose **Desktop app**, create it, and copy
+   its **Client ID** and **Client Secret**. Configure this exact pair together;
+   Google's token endpoint for the OAuth client used by this app currently
+   rejects exchanges without the secret.
+5. In the GitHub repository, open **Settings → Secrets and variables → Actions**
+   and add `WEATHERNEXT_OAUTH_CLIENT_ID` as a repository variable (recommended)
+   or secret, and add `WEATHERNEXT_OAUTH_CLIENT_SECRET` as a repository secret.
+   The build workflow XOR-obfuscates the secret before embedding it, so its
+   plaintext does not appear in the binary's string table. The key and decoder
+   are also in the binary, so this only blocks casual string searches; anyone
+   with a binary can recover the secret. For public distribution, use an OAuth
+   client intended for installed desktop apps and treat its embedded secret as
+   public.
+
+Google's [OAuth client guide](https://support.google.com/cloud/answer/15549257)
+and [app audience guide](https://support.google.com/cloud/answer/15549945)
+describe these settings and the seven-day testing limit.
 
 ## Requirements
 
-- Go 1.26 or newer (the Charm v2 dependencies require Go 1.26).
-- A checkout of the WeatherNext Python project containing `weathercore/worker.py`
-  and its configured virtual environment. The TUI discovers it in a parent
-  directory, or you can set `WEATHERNEXT_HOME` to that project's path.
-- Google Cloud credentials for interactive use. Startup checks credentials
-  before opening saved forecasts. Settings requires an explicit Google Cloud
-  project ID, WeatherNext dataset name, and table name; the app verifies table
-  metadata before any forecast query. This check is not a billed forecast
-  query. A project ID found in ADC credentials is offered as a suggestion only.
-  Credentials do not identify a shared WeatherNext dataset or table. Static
-  `--print` output works offline.
+- Released binaries run on Linux and Windows without Python, `gcloud`, or a
+  preinstalled Google SDK. Builds from source require Go 1.26 or newer.
+- Interactive sign-in uses the app's embedded OAuth client ID and XOR-obfuscated
+  client secret. It opens the system browser and checks that Google sign-in can
+  still refresh before opening any saved forecast. User refresh credentials are
+  saved separately in the user's configuration directory. The app does not
+  inspect or use `gcloud`/ADC credentials, so the user chooses the account.
+- Each user enters the target project ID, WeatherNext dataset, and table in
+  Settings. The app verifies table metadata before any forecast query. That
+  check does not run a billed forecast query. Static `--print` output works
+  offline.
 
 ## Build Linux and Windows x64
 
 From this repository root, run:
 
 ```sh
+WEATHERNEXT_OAUTH_CLIENT_ID='your-client-id.apps.googleusercontent.com' \
+WEATHERNEXT_OAUTH_CLIENT_SECRET='your-client-secret' \
 ./scripts/build-release.sh
 ```
 
 On Windows PowerShell:
 
 ```powershell
+$env:WEATHERNEXT_OAUTH_CLIENT_ID = 'your-client-id.apps.googleusercontent.com'
+$env:WEATHERNEXT_OAUTH_CLIENT_SECRET = 'your-client-secret'
 .\scripts\build-release.ps1
 ```
 
@@ -132,17 +178,20 @@ disabled:
 - Windows amd64 (x86_64)
 - Windows arm64
 
-Each binary is uploaded as its own downloadable artifact and retained for 30
-days. To download one, open the repository's **Actions** tab, select the
+Set `WEATHERNEXT_OAUTH_CLIENT_ID` as a repository Actions variable or secret,
+and `WEATHERNEXT_OAUTH_CLIENT_SECRET` as a repository Actions secret. Each
+binary gets a fresh random XOR key and is uploaded as its own downloadable
+artifact, retained for 30 days. To download one, open the repository's
+**Actions** tab, select the
 **Build binaries** run, then choose the platform artifact in the run summary's
 **Artifacts** section. The artifacts contain the binary directly, not a zip
 file. GitHub documents the artifact download section in the
 [`upload-artifact` action](https://github.com/actions/upload-artifact#where-does-the-upload-go).
 
-The binary discovers the Python project in its parent folders and opens that
-project’s `output/forecast.json`. Pass `--home <project-folder>` to select another
-worker project, or `--input <path>` to open another forecast file. Removed places
-are not restored by reopening an old cached JSON.
+After Google sign-in and table setup, the app opens a local saved forecast when
+available. Pass `--home <folder>` to choose another folder for forecast files
+and application state, or `--input <path>` to open a forecast JSON file.
+Removed places are not restored by reopening an old cached JSON.
 
 ```sh
 /path/to/weathernext-tui/dist/linux-amd64/weathernext
@@ -156,6 +205,8 @@ are not restored by reopening an old cached JSON.
 
 ```sh
 go test ./...
+WEATHERNEXT_OAUTH_CLIENT_ID='your-client-id.apps.googleusercontent.com' \
+WEATHERNEXT_OAUTH_CLIENT_SECRET='your-client-secret' go run ./cmd/weathernext
 go run ./cmd/weathernext --print --input /path/to/forecast.json
 ```
 

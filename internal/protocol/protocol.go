@@ -1,5 +1,5 @@
-// Package protocol implements the versioned newline-delimited JSON protocol
-// shared by the Go terminal UI and the persistent Python worker.
+// Package protocol defines the JSON messages used by the terminal UI and its
+// native Go backend.
 package protocol
 
 import "encoding/json"

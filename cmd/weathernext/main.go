@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"flag"
 	"fmt"
 	"os"
@@ -14,26 +13,26 @@ import (
 
 func main() {
 	printMode := flag.Bool("print", false, "print a static wttr.in-style summary and exit")
-	input := flag.String("input", "", "forecast JSON file to open (default: <project>/output/forecast.json)")
-	project := flag.String("home", "", "WeatherNext project folder (or set WEATHERNEXT_HOME)")
+	input := flag.String("input", "", "forecast JSON file to open (default: <home>/output/forecast.json)")
+	project := flag.String("home", "", "folder for local forecast files and Google login state (or set WEATHERNEXT_HOME)")
 	flag.Parse()
 	if *project != "" {
 		_ = os.Setenv("WEATHERNEXT_HOME", *project)
 	}
-	root, rootErr := backend.FindProjectRoot()
+	root, rootErr := backend.FindHome()
 	cwd, _ := os.Getwd()
-	path := *input
-	if path == "" {
-		base := cwd
-		if rootErr == nil {
-			base = root
-		}
-		path = filepath.Join(base, "output", "forecast.json")
-	} else if !filepath.IsAbs(path) {
-		path = filepath.Join(cwd, path)
-	}
-	raw, readErr := os.ReadFile(path)
 	if *printMode {
+		path := *input
+		if path == "" {
+			base := cwd
+			if rootErr == nil {
+				base = root
+			}
+			path = filepath.Join(base, "output", "forecast.json")
+		} else if !filepath.IsAbs(path) {
+			path = filepath.Join(cwd, path)
+		}
+		raw, readErr := os.ReadFile(path)
 		if readErr != nil {
 			fatal(fmt.Errorf("open %s: %w", path, readErr))
 		}
@@ -43,28 +42,27 @@ func main() {
 		return
 	}
 	var caller tui.Caller
-	if rootErr == nil {
-		var err error
-		client, err := backend.Start(context.Background(), root)
+	if rootErr != nil {
+		fmt.Fprintln(os.Stderr, "WeatherNext local folder unavailable:", rootErr)
+	} else {
+		client, err := backend.StartNative(root)
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "WeatherNext worker unavailable:", err)
+			fmt.Fprintln(os.Stderr, "WeatherNext local backend unavailable:", err)
 		} else if client != nil {
 			defer client.Close()
 			caller = client
 		} else {
-			fmt.Fprintln(os.Stderr, "WeatherNext worker unavailable: backend returned no client")
+			fmt.Fprintln(os.Stderr, "WeatherNext local backend unavailable: no client was returned")
 		}
 	}
-	if readErr != nil && *input != "" {
-		fmt.Fprintf(os.Stderr, "Cached forecast %s could not be opened: %v\n", path, readErr)
+	openPath := ""
+	if *input != "" {
+		openPath = *input
+		if !filepath.IsAbs(openPath) {
+			openPath = filepath.Join(cwd, openPath)
+		}
 	}
-	openPath := path
-	if readErr != nil && *input == "" {
-		// Let the worker open its durable latest forecast from local storage if
-		// the conventional JSON file is absent.
-		openPath = ""
-	}
-	model := tui.NewWithPath(raw, caller, openPath)
+	model := tui.NewWithPath(nil, caller, openPath)
 	p := tea.NewProgram(&model)
 	if _, err := p.Run(); err != nil {
 		fatal(err)

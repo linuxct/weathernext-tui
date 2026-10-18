@@ -218,10 +218,10 @@ func TestLoginScreenExplainsWeatherNextTargetWithoutDumpingJSON(t *testing.T) {
 	m.screen = ScreenLogin
 	m.onboarding = true
 	m.width, m.height = 120, 40
-	m.login = json.RawMessage(`{"authenticated":true,"connected":false,"target_project":"test-weather-project","table":"test-weather-project.test_dataset.forecast_table","account_hint":"user@example.invalid","message":"Google access needs to be checked."}`)
+	m.login = json.RawMessage(`{"authenticated":true,"connected":false,"target_project":"test-weather-project","table":"test-weather-project.test_dataset.forecast_table","message":"Google access needs to be checked."}`)
 	m.loginMessage = "Google access needs to be checked."
 	view := m.loginView()
-	for _, want := range []string{"test-weather-project", "forecast_table", "user@example.invalid", "Access:  not verified"} {
+	for _, want := range []string{"test-weather-project", "forecast_table", "Google sign-in is active", "Access:  not verified"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("login view missing %q: %s", want, view)
 		}
@@ -255,9 +255,9 @@ func TestStartupChecksGoogleBeforeShowingSavedForecast(t *testing.T) {
 	if cmd := m.Init(); cmd == nil || m.busy != "settings.get" {
 		t.Fatal("startup did not load target configuration before checking Google access")
 	}
-	_, cmd := m.Update(backendResult{method: "settings.get", data: json.RawMessage(`{"settings":{},"project_hint":"weather-project"}`)})
+	_, cmd := m.Update(backendResult{method: "settings.get", data: json.RawMessage(`{"settings":{}}`)})
 	if cmd == nil || m.busy != "auth.status" {
-		t.Fatal("startup did not check ADC after loading local settings")
+		t.Fatal("startup did not check Google sign-in after loading local settings")
 	}
 	_, cmd = m.Update(backendResult{method: "auth.status", data: json.RawMessage(`{"authenticated":false,"login_available":true,"message":"Sign in first."}`)})
 	if cmd == nil || m.screen != ScreenLogin || m.busy != "auth.start" || !m.loginAutoStarted {
@@ -285,16 +285,29 @@ func TestStartupChecksGoogleBeforeShowingSavedForecast(t *testing.T) {
 	}
 }
 
-func TestPasteMsgFillsLoginCodeAndOtherTextInputs(t *testing.T) {
+func TestGoogleSignInOpensBrowserAutomatically(t *testing.T) {
+	m := NewWithPath(nil, nil, "")
+	var opened string
+	m.openBrowser = func(value string) error {
+		opened = value
+		return nil
+	}
+	_, cmd := m.Update(backendResult{method: "auth.start", data: json.RawMessage(`{"status":"started","request_id":"login-1","verification_url":"https://accounts.google.com/o/oauth2/v2/auth?client_id=public","message":"Sign in with Google."}`)})
+	if cmd == nil || opened != "https://accounts.google.com/o/oauth2/v2/auth?client_id=public" {
+		t.Fatalf("browser sign-in did not open automatically: opened=%q cmd=%v", opened, cmd != nil)
+	}
+	if !m.loginFlow || !m.loginBrowserOpened {
+		t.Fatalf("login flow state was not retained: flow=%v opened=%v", m.loginFlow, m.loginBrowserOpened)
+	}
+}
+
+func TestPasteOnlyFillsUserEditableFields(t *testing.T) {
 	m := New([]byte(sample), nil)
 	m.screen = ScreenLogin
 	m.loginFlow = true
 	m.Update(tea.PasteMsg{Content: "  ABCD-EFGH\r\n"})
-	if m.loginCode != "ABCD-EFGH" {
-		t.Fatalf("pasted login code = %q", m.loginCode)
-	}
-	if !strings.Contains(m.status, "pasted") {
-		t.Fatalf("status does not confirm paste: %q", m.status)
+	if strings.Contains(m.status, "pasted") {
+		t.Fatalf("browser sign-in should not request a code paste: %q", m.status)
 	}
 
 	m.screen = ScreenSearch
@@ -304,10 +317,10 @@ func TestPasteMsgFillsLoginCodeAndOtherTextInputs(t *testing.T) {
 	}
 
 	m.screen = ScreenSettings
-	m.settingIndex = len(settingRows())
-	m.Update(tea.PasteMsg{Content: "AIza-example-key\n"})
-	if m.mapsKey != "AIza-example-key" {
-		t.Fatalf("pasted Maps key = %q", m.mapsKey)
+	m.settingIndex = 0
+	m.Update(tea.PasteMsg{Content: "sample-project\n"})
+	if m.settingsEdit != "sample-project" {
+		t.Fatalf("pasted project ID = %q", m.settingsEdit)
 	}
 }
 
@@ -338,8 +351,8 @@ func TestSettingsSelectionUsesArrowKeysInsteadOfTab(t *testing.T) {
 	for range len(settingRows()) + 2 {
 		m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyDown}))
 	}
-	if m.settingIndex != len(settingRows()) {
-		t.Fatalf("Down selected row %d, want Maps key row %d", m.settingIndex, len(settingRows()))
+	if m.settingIndex != len(settingRows())-1 {
+		t.Fatalf("Down selected row %d, want last settings row %d", m.settingIndex, len(settingRows())-1)
 	}
 	if !strings.Contains(m.settingsView(), "↑/↓ selects") {
 		t.Fatal("settings help text does not explain arrow navigation")

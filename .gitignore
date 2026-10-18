@@ -1,14 +1,13 @@
 # Generated cross-build outputs
 /dist/
 
-# Keep the standalone UI repository free of the Python backend and its data.
+# Keep the original Python forecast project and local data out of this Go repository.
 *.py
 __pycache__/
 .venv/
 .local/
 /output/
 /weathercore/
-/forecast.py
 /requirements.txt
 
 # Local editor and operating-system files

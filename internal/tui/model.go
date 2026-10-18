@@ -71,51 +71,50 @@ var navigationKeys = struct{ Up, Down keypkg.Binding }{
 }
 
 type Model struct {
-	data              Data
-	caller            Caller
-	forecastPath      string
-	screen            Screen
-	tab               Tab
-	selected          int
-	hour              int
-	detailScroll      int
-	readableScroll    int
-	spendingScroll    int
-	width, height     int
-	search            string
-	candidates        []Location
-	candidate         int
-	loginCode         string
-	loginFlow         bool
-	loginAutoStarted  bool
-	onboarding        bool
-	authChecking      bool
-	mapsSettingUp     bool
-	mapsConfigured    bool
-	mapsSetupMessage  string
-	loginMessage      string
-	loginURL          string
-	loginRequestID    string
-	targetProject     string
-	targetTable       string
-	targetProjectHint string
-	mapsKey           string
-	focusSidebar      bool
-	status            string
-	loading           bool
-	busy              string
-	spending          json.RawMessage
-	jobs              json.RawMessage
-	settings          json.RawMessage
-	settingsValues    map[string]any
-	settingIndex      int
-	settingsEdit      string
-	login             json.RawMessage
-	useASCII          bool
-	noColor           bool
-	requestCancel     context.CancelFunc
-	eventCtx          context.Context
-	eventCh           chan backendEvent
+	data               Data
+	caller             Caller
+	forecastPath       string
+	screen             Screen
+	tab                Tab
+	selected           int
+	hour               int
+	detailScroll       int
+	readableScroll     int
+	spendingScroll     int
+	width, height      int
+	search             string
+	candidates         []Location
+	candidate          int
+	loginFlow          bool
+	loginAutoStarted   bool
+	loginBrowserOpened bool
+	onboarding         bool
+	authChecking       bool
+	mapsSettingUp      bool
+	mapsConfigured     bool
+	mapsSetupMessage   string
+	loginMessage       string
+	loginURL           string
+	loginRequestID     string
+	targetProject      string
+	targetTable        string
+	focusSidebar       bool
+	status             string
+	loading            bool
+	busy               string
+	spending           json.RawMessage
+	jobs               json.RawMessage
+	settings           json.RawMessage
+	settingsValues     map[string]any
+	settingIndex       int
+	settingsEdit       string
+	login              json.RawMessage
+	useASCII           bool
+	noColor            bool
+	requestCancel      context.CancelFunc
+	eventCtx           context.Context
+	eventCh            chan backendEvent
+	openBrowser        func(string) error
 }
 
 func New(raw []byte, caller Caller) Model {
@@ -124,7 +123,7 @@ func New(raw []byte, caller Caller) Model {
 
 func NewWithPath(raw []byte, caller Caller, path string) Model {
 	m := Model{caller: caller, forecastPath: path, width: 80, height: 24, noColor: os.Getenv("NO_COLOR") != "",
-		screen: ScreenLogin, onboarding: true}
+		screen: ScreenLogin, onboarding: true, openBrowser: openVerificationURL}
 	m.useASCII = !supportsUnicode()
 	if strings.EqualFold(os.Getenv("WEATHERNEXT_ASCII"), "1") {
 		m.useASCII = true
@@ -142,7 +141,7 @@ func (m *Model) Init() tea.Cmd {
 		return m.run("settings.get", nil)
 	}
 	m.authChecking = false
-	m.loginMessage = "The Python worker is unavailable. Open the app from the WeatherNext project after setup."
+	m.loginMessage = "The native WeatherNext backend could not start. Check that this folder is writable."
 	return nil
 }
 
@@ -168,19 +167,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		switch m.screen {
 		case ScreenLogin:
-			if m.loginFlow {
-				m.loginCode += pasted
-				m.status = "Login code pasted · press Enter to submit"
-			}
+			m.status = "Google sign-in completes in the browser; there is nothing to paste here."
 		case ScreenSearch:
 			m.search += pasted
 			m.candidates = nil
 		case ScreenSettings:
-			if m.settingIndex == len(settingRows()) {
-				m.mapsKey += pasted
-			} else {
-				m.settingsEdit += pasted
-			}
+			m.settingsEdit += pasted
 		}
 	case backendEvent:
 		if msg.msg.Event == "billing.job_completed" {
@@ -337,7 +329,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			var state struct {
 				Authenticated  bool   `json:"authenticated"`
 				LoginAvailable bool   `json:"login_available"`
-				ProjectHint    string `json:"project_hint"`
 				Message        string `json:"message"`
 				Login          struct {
 					Status          string `json:"status"`
@@ -347,9 +338,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				} `json:"login"`
 			}
 			_ = json.Unmarshal(msg.data, &state)
-			if state.ProjectHint != "" {
-				m.targetProjectHint = state.ProjectHint
-			}
 			if state.Login.RequestID != "" {
 				m.loginRequestID = state.Login.RequestID
 			}
@@ -366,7 +354,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.authChecking = true
 					return m, m.run("auth.check", m.targetParams())
 				}
-				m.loginMessage = "Application Default Credentials are ready."
+				m.loginMessage = "Google credentials are ready."
 			} else if m.onboarding && state.LoginAvailable {
 				m.loginMessage = "No usable Google credentials were found. Starting Google sign-in…"
 				if !m.loginAutoStarted {
@@ -375,6 +363,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			} else if state.Login.Status == "started" || state.Login.Status == "needs_input" {
 				m.loginFlow = true
+				m.openLoginBrowser()
 				return m, tea.Tick(1500*time.Millisecond, func(time.Time) tea.Msg { return loginPollMsg{} })
 			} else if state.Login.Status == "failed" || state.Login.Status == "cancelled" {
 				m.loginFlow = false
@@ -395,6 +384,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.loginFlow = flow.Status == "needs_input" || flow.Status == "started"
 			m.loginMessage = strings.TrimSpace(strings.Join([]string{flow.Message, flow.Instructions, flow.VerificationURL}, "\n"))
 			m.loginURL = flow.VerificationURL
+			if flow.Status == "started" {
+				m.openLoginBrowser()
+			}
 			if flow.Status == "complete" {
 				m.loginFlow = false
 				m.loginMessage = "Google sign-in finished. Verifying WeatherNext access…"
@@ -505,9 +497,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				if strings.TrimSpace(m.search) != "" {
 					params := map[string]any{"query": strings.TrimSpace(m.search)}
-					if m.mapsKey != "" {
-						params["api_key"] = m.mapsKey
-					}
 					return m, m.run("locations.search", params)
 				}
 			case "up", "k":
@@ -545,27 +534,18 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			if key == "a" && !m.loading {
+				m.loginBrowserOpened = false
 				return m, m.run("auth.start", nil)
 			}
 			if key == "o" && m.loginURL != "" {
-				if err := openVerificationURL(m.loginURL); err != nil {
+				if m.openBrowser == nil {
+					m.openBrowser = openVerificationURL
+				}
+				if err := m.openBrowser(m.loginURL); err != nil {
 					m.status = err.Error()
 				} else {
 					m.status = "Opened Google's login page in your browser."
 				}
-				return m, nil
-			}
-			if key == "enter" && m.loginFlow && m.loginCode != "" {
-				code := m.loginCode
-				m.loginCode = ""
-				return m, m.run("auth.respond", map[string]any{"request_id": m.loginRequestID, "code": code})
-			}
-			if key == "backspace" && len(m.loginCode) > 0 {
-				m.loginCode = m.loginCode[:len(m.loginCode)-1]
-				return m, nil
-			}
-			if text := msg.Key().Text; text != "" && m.loginFlow {
-				m.loginCode += text
 				return m, nil
 			}
 		}
@@ -588,7 +568,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if key == "down" {
 					delta = 1
 				}
-				m.settingIndex = clamp(m.settingIndex+delta, 0, len(settingRows()))
+				m.settingIndex = clamp(m.settingIndex+delta, 0, len(settingRows())-1)
 				m.settingsEdit = ""
 				return m, nil
 			}
@@ -613,23 +593,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.loginMessage = "Checking table metadata only; no forecast query will run…"
 				return m, m.run("auth.check", m.targetParams())
 			}
-			if key == "ctrl+p" && m.settingField() == "target_project" && m.targetProjectHint != "" {
-				m.settingsEdit = m.targetProjectHint
-				return m, nil
-			}
 			if key == "enter" {
-				if m.settingIndex == len(settingRows()) {
-					m.status = "Maps key is held in memory for this session only"
-					return m, nil
-				}
 				return m, m.saveSettings()
 			}
 			if text := msg.Key().Text; text != "" {
-				if m.settingIndex == len(settingRows()) {
-					m.mapsKey += text
-				} else {
-					m.settingsEdit += text
-				}
+				m.settingsEdit += text
 				return m, nil
 			}
 		}
@@ -724,7 +692,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "r":
 			if !m.loading {
 				if len(m.selectedIDs()) == 0 {
-					m.status = "No saved location is selected. The cached forecast will be imported when the worker opens it."
+					m.status = "No saved location is selected. The cached forecast will be imported when it opens."
 					return m, nil
 				}
 				return m, m.run("forecast.fetch", map[string]any{"location_ids": m.selectedIDs(), "hours": m.forecastHours(), "include_station": false, "refresh": true})
@@ -751,11 +719,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "?":
 			m.screen = ScreenHelp
 		case "enter":
-			if m.screen == ScreenLogin && m.loginFlow && m.loginCode != "" {
-				code := m.loginCode
-				m.loginCode = ""
-				return m, m.run("auth.respond", map[string]any{"request_id": m.loginRequestID, "code": code})
-			}
 			if m.screen == ScreenForecast && m.tab == TabHourly {
 				m.tab = TabDetails
 			}
@@ -909,7 +872,7 @@ func (m Model) selectedIDs() []string {
 func (m *Model) run(method string, params map[string]any) tea.Cmd {
 	if m.caller == nil {
 		return func() tea.Msg {
-			return backendResult{method: method, err: fmt.Errorf("Python worker is not available. Open saved forecasts offline or run from the project folder after setup.")}
+			return backendResult{method: method, err: fmt.Errorf("native WeatherNext backend is unavailable")}
 		}
 	}
 	m.loading = true
@@ -986,7 +949,7 @@ func (m Model) View() tea.View {
 	statusTitle, status := "ACTIVITY", m.status
 	if m.loading {
 		statusTitle = "WORKING  /  " + strings.ToUpper(m.busy)
-		status = "Request in progress · Esc asks the worker to cancel"
+		status = "Request in progress · Esc asks Google to cancel the query"
 	}
 	if status == "" {
 		status = "Forecasts open locally · refresh runs a BigQuery query"
@@ -2021,10 +1984,6 @@ func (m Model) settingsView() string {
 	var b strings.Builder
 	b.WriteString("SETTINGS · values are local to this machine\n\n")
 	b.WriteString("WEATHERNEXT BIGQUERY TARGET · required before forecasts can open\n")
-	if m.targetProjectHint != "" {
-		b.WriteString("Google credentials suggest project " + m.targetProjectHint +
-			" · select Project ID and press Ctrl+P to copy; access still needs verification.\n")
-	}
 	b.WriteString("Enter a project ID, dataset name, and table name. The app checks table metadata before any forecast query.\n\n")
 	if m.mapsConfigured {
 		b.WriteString("Google Maps: configured automatically · Geocoding API only\n\n")
@@ -2049,19 +2008,10 @@ func (m Model) settingsView() string {
 		}
 		b.WriteString(fmt.Sprintf("%s%-60s %s\n", mark, row.label, shown))
 	}
-	mark := "  "
-	if m.settingIndex == len(rows) {
-		mark = "> "
-	}
-	keyText := "unset"
-	if m.mapsKey != "" {
-		keyText = strings.Repeat("•", len(m.mapsKey))
-	}
-	b.WriteString(fmt.Sprintf("%s%-60s %s\n", mark, "Optional Maps API key override (session only)", keyText))
-	b.WriteString("\n↑/↓ selects · type value · Enter saves · Ctrl+T checks target access · Ctrl+P copies project suggestion\n")
-	b.WriteString("Use 'off' to clear a target value. Target names are never filled from Python defaults.\n")
+	b.WriteString("\n↑/↓ selects · type value · Enter saves · Ctrl+T checks target access\n")
+	b.WriteString("Use 'off' to clear a target value. Target names are never filled automatically.\n")
 	b.WriteString("Ctrl+G configures Maps · c/f sets temperature unit · Esc returns\n")
-	b.WriteString("Daily/monthly byte thresholds stop the app before a later job after reported billed bytes reach the threshold; they do not cap active queries or other Google Cloud usage.\n")
+	b.WriteString("Each query is capped to the lower of its per-query limit and the remaining daily/monthly byte threshold. Limits count jobs recorded by this app only.\n")
 	b.WriteString("Automatic setup enables the Geocoding and API Keys services, then stores a restricted key in local credentials.\n")
 	return b.String()
 }
@@ -2131,14 +2081,14 @@ func (m Model) targetParams() map[string]any {
 
 func (m Model) loginView() string {
 	var state struct {
-		Authenticated bool   `json:"authenticated"`
-		Connected     bool   `json:"connected"`
-		RequiresLogin bool   `json:"requires_login"`
-		AccountHint   string `json:"account_hint"`
-		TargetProject string `json:"target_project"`
-		TargetDataset string `json:"target_dataset"`
-		Table         string `json:"table"`
-		Message       string `json:"message"`
+		Authenticated  bool   `json:"authenticated"`
+		LoginAvailable bool   `json:"login_available"`
+		Connected      bool   `json:"connected"`
+		RequiresLogin  bool   `json:"requires_login"`
+		TargetProject  string `json:"target_project"`
+		TargetDataset  string `json:"target_dataset"`
+		Table          string `json:"table"`
+		Message        string `json:"message"`
 	}
 	_ = json.Unmarshal(m.login, &state)
 	b := strings.Builder{}
@@ -2153,11 +2103,7 @@ func (m Model) loginView() string {
 	case m.authChecking:
 		b.WriteString("  Checking the selected Google account…\n")
 	case state.Authenticated:
-		if state.AccountHint != "" {
-			b.WriteString("  Credentials found · " + state.AccountHint + "\n")
-		} else {
-			b.WriteString("  Credentials found\n")
-		}
+		b.WriteString("  Google sign-in is active\n")
 	case state.RequiresLogin:
 		b.WriteString("  Sign-in required\n")
 	default:
@@ -2207,9 +2153,16 @@ func (m Model) loginView() string {
 		b.WriteString("\n" + state.Message + "\n")
 	}
 	if m.loginFlow {
-		b.WriteString("\nPaste the one-time Google code here: " + strings.Repeat("*", len(m.loginCode)) + "_\nEnter submits · o opens verification URL · Esc cancels the login\n")
+		b.WriteString("\nFinish Google sign-in in your browser. WeatherNext will continue automatically when you return.\n")
+		b.WriteString("Press o to open the sign-in page again · Esc cancels the login\n")
+	} else if !state.LoginAvailable {
+		message := state.Message
+		if message == "" {
+			message = "This build is missing the app's Google OAuth client credentials."
+		}
+		b.WriteString("\n" + message + " Use a configured release binary.\n")
 	} else if !state.Authenticated {
-		b.WriteString("\nPress a to start Google sign-in. Open the verification URL, approve access, then paste the returned code here.\n")
+		b.WriteString("\nSign in with Google to start. You will then enter the WeatherNext project ID, dataset, and table in Settings.\n")
 	} else if !m.hasTargetConfig() {
 		b.WriteString("\nPress s to configure the project ID, dataset, and table in Settings. Credentials do not contain shared table names.\n")
 	} else if !state.Connected {
@@ -2217,7 +2170,7 @@ func (m Model) loginView() string {
 	} else {
 		b.WriteString("\nGoogle access is verified. Forecast data is available in the workspace.\n")
 	}
-	b.WriteString("Credentials are handled by gcloud Application Default Credentials. Codes are held in memory only.\n")
+	b.WriteString("Google account credentials stay on this computer. The app asks only for your account sign-in and WeatherNext table IDs.\n")
 	return b.String()
 }
 
@@ -2247,6 +2200,20 @@ func openVerificationURL(raw string) error {
 	}
 	return nil
 }
+
+func (m *Model) openLoginBrowser() {
+	if m.loginBrowserOpened || strings.TrimSpace(m.loginURL) == "" {
+		return
+	}
+	m.loginBrowserOpened = true
+	if m.openBrowser == nil {
+		m.openBrowser = openVerificationURL
+	}
+	if err := m.openBrowser(m.loginURL); err != nil {
+		m.loginMessage += "\nCould not open a browser automatically. Press o to retry or copy the Google sign-in URL above."
+	}
+}
+
 func sectionView(title string, raw json.RawMessage, empty string) string {
 	if len(raw) == 0 {
 		return title + "\n\n" + empty
@@ -2254,7 +2221,7 @@ func sectionView(title string, raw json.RawMessage, empty string) string {
 	return title + "\n\n" + prettyJSON(raw) + "\n\n" + empty
 }
 func helpView() string {
-	return "KEYS\n\n↑ / k       previous location or hour\n↓ / j       next location or hour\n← / h       select location sidebar\n→           return focus to forecast\nTab         next forecast tab\n1 / 2 / 3   hourly / daily / details\n/           search locations; Enter searches, arrows select candidates\nr           fetch selected location for configured hours (BigQuery may bill)\nb           billed-byte ledger and job history\ns           settings: Google project/dataset/table, units, hours, byte caps, rates\nCtrl+T      check configured BigQuery table metadata; no forecast query\nCtrl+P      copy credential project suggestion into the selected Project ID field\nl / a      login status / start login; Esc cancels, code stays masked\nEsc         back or cancel current operation\nq           quit\n\nThe app requires an explicit target table. Credentials can suggest a project ID, but do not identify a shared WeatherNext dataset or table. Forecasts open from local JSON offline; refresh sends a BigQuery request.\n"
+	return "KEYS\n\n↑ / k       previous location or hour\n↓ / j       next location or hour\n← / h       select location sidebar\n→           return focus to forecast\nTab         next forecast tab\n1 / 2 / 3   hourly / daily / details\n/           search locations; Enter searches, arrows select candidates\nr           fetch selected location for configured hours (BigQuery may bill)\nb           billed-byte ledger and job history\ns           settings: Google project/dataset/table, units, hours, byte caps, rates\nCtrl+T      check configured BigQuery table metadata; no forecast query\nl / a      login status / start login; Esc cancels\nEsc         back or cancel current operation\nq           quit\n\nThe app requires an explicit target table. Enter the project ID, dataset, and table after Google sign-in. Forecasts open only after account and table access are verified.\n"
 }
 
 func (m Model) selectedLocation() *Location {
@@ -2340,9 +2307,8 @@ func fieldUnit(name, unit string) string {
 }
 func (m *Model) decodeSettings(raw json.RawMessage) {
 	var result struct {
-		Settings    map[string]any `json:"settings"`
-		Billing     map[string]any `json:"billing"`
-		ProjectHint string         `json:"project_hint"`
+		Settings map[string]any `json:"settings"`
+		Billing  map[string]any `json:"billing"`
 	}
 	if json.Unmarshal(raw, &result) != nil {
 		return
@@ -2355,9 +2321,6 @@ func (m *Model) decodeSettings(raw json.RawMessage) {
 	}
 	for k, v := range result.Billing {
 		m.settingsValues[k] = v
-	}
-	if result.ProjectHint != "" {
-		m.targetProjectHint = result.ProjectHint
 	}
 	if _, ok := m.settingsValues["default_hours"]; !ok {
 		m.settingsValues["default_hours"] = 24

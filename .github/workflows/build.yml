@@ -61,12 +61,18 @@ jobs:
         run: |
           mkdir -p dist
           output="dist/weathernext-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.extension }}"
+          secret_for_scan="$WEATHERNEXT_OAUTH_CLIENT_SECRET"
           obfuscated_secret=$(go run ./scripts/obfuscate-secret.go)
           secret_cipher=${obfuscated_secret%%:*}
           secret_key=${obfuscated_secret#*:}
           unset obfuscated_secret WEATHERNEXT_OAUTH_CLIENT_SECRET
           CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} \
             go build -trimpath -ldflags="-s -w -X weathernext/internal/backend.OAuthClientID=${WEATHERNEXT_OAUTH_CLIENT_ID} -X weathernext/internal/backend.OAuthClientSecretCipher=${secret_cipher} -X weathernext/internal/backend.OAuthClientSecretKey=${secret_key}" -o "$output" ./cmd/weathernext
+          if strings "$output" | grep -Fq -- "$secret_for_scan"; then
+            echo '::error::OAuth client secret appeared as plaintext in the binary; refusing to upload it.'
+            exit 1
+          fi
+          unset secret_for_scan secret_cipher secret_key
 
       - name: Upload downloadable binary artifact
         uses: actions/upload-artifact@v7

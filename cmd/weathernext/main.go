@@ -42,16 +42,18 @@ func main() {
 		}
 		return
 	}
-	var client *backend.Client
+	var caller tui.Caller
 	if rootErr == nil {
 		var err error
-		client, err = backend.Start(context.Background(), root)
+		client, err := backend.Start(context.Background(), root)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "WeatherNext worker unavailable:", err)
+		} else if client != nil {
+			defer client.Close()
+			caller = client
+		} else {
+			fmt.Fprintln(os.Stderr, "WeatherNext worker unavailable: backend returned no client")
 		}
-	}
-	if client != nil {
-		defer client.Close()
 	}
 	if readErr != nil && *input != "" {
 		fmt.Fprintf(os.Stderr, "Cached forecast %s could not be opened: %v\n", path, readErr)
@@ -62,7 +64,7 @@ func main() {
 		// the conventional JSON file is absent.
 		openPath = ""
 	}
-	model := tui.NewWithPath(raw, client, openPath)
+	model := tui.NewWithPath(raw, caller, openPath)
 	p := tea.NewProgram(&model)
 	if _, err := p.Run(); err != nil {
 		fatal(err)

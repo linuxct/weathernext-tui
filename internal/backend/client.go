@@ -156,6 +156,9 @@ func pythonCommand(root string) (string, []string, error) {
 }
 
 func (c *Client) Call(ctx context.Context, method string, params map[string]any, onEvent EventHandler) (json.RawMessage, error) {
+	if c == nil {
+		return nil, errors.New("Python worker client is unavailable")
+	}
 	id, err := randomID(c.seq.Add(1))
 	if err != nil {
 		return nil, err

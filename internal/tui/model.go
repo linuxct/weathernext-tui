@@ -980,7 +980,7 @@ func (m Model) View() tea.View {
 			title += " · " + m.data.Locations[m.selected].Name
 		}
 		header = m.panel(title, "", width, headerHeight, true)
-		navigation = m.panel("1 Forecast · 2 Daily · 3 Raw · / Places · b Billing · s Settings", "", width, navHeight, false)
+		navigation = m.panel("1 Forecast · 2 Daily · 3 Raw ·     / Places · b Billing · s Settings", "", width, navHeight, false)
 	}
 	workspace := m.workspace(width, mainHeight)
 	statusTitle, status := "ACTIVITY", m.status
@@ -1137,14 +1137,27 @@ func (m Model) navigation() string {
 		parts = append(parts, label)
 	}
 	separator := "   "
+	groupSeparator := "       "
 	if m.width < 80 {
 		parts = []string{"1 Forecast", "2 Day", "3 Raw", "/ Places", "b Bill", "s Setup", "l Login", "? Help"}
 		separator = "  "
+		groupSeparator = "      "
 		if m.width < 50 {
 			parts = []string{"1 Wx", "2 Day", "3 Raw", "/ Places", "b Bill", "s Setup", "l Login", "? Help"}
 		}
 	}
-	return strings.Join(parts, separator)
+	var b strings.Builder
+	for i, part := range parts {
+		if i > 0 {
+			if i == 3 {
+				b.WriteString(groupSeparator)
+			} else {
+				b.WriteString(separator)
+			}
+		}
+		b.WriteString(part)
+	}
+	return b.String()
 }
 
 func (m Model) keyHints(width int) string {

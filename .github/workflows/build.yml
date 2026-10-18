@@ -1,0 +1,71 @@
+name: Build binaries
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run tests
+        run: go test ./...
+
+  build:
+    name: Build ${{ matrix.goos }} ${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            extension: ''
+          - goos: linux
+            goarch: arm64
+            extension: ''
+          - goos: windows
+            goarch: amd64
+            extension: .exe
+          - goos: windows
+            goarch: arm64
+            extension: .exe
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Cross-compile binary
+        shell: bash
+        run: |
+          mkdir -p dist
+          output="dist/weathernext-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.extension }}"
+          CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} \
+            go build -trimpath -ldflags='-s -w' -o "$output" ./cmd/weathernext
+
+      - name: Upload downloadable binary artifact
+        uses: actions/upload-artifact@v7
+        with:
+          path: dist/weathernext-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.extension }}
+          archive: false
+          if-no-files-found: error
+          retention-days: 30

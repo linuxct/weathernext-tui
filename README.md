@@ -122,6 +122,23 @@ The scripts download Go modules and create:
 - `dist/linux-amd64/weathernext`
 - `dist/windows-amd64/weathernext.exe`
 
+## GitHub Actions builds
+
+Every push runs the Go tests and builds four standalone binaries with CGO
+disabled:
+
+- Linux amd64 (x86_64)
+- Linux arm64
+- Windows amd64 (x86_64)
+- Windows arm64
+
+Each binary is uploaded as its own downloadable artifact and retained for 30
+days. To download one, open the repository's **Actions** tab, select the
+**Build binaries** run, then choose the platform artifact in the run summary's
+**Artifacts** section. The artifacts contain the binary directly, not a zip
+file. GitHub documents the artifact download section in the
+[`upload-artifact` action](https://github.com/actions/upload-artifact#where-does-the-upload-go).
+
 The binary discovers the Python project in its parent folders and opens that
 project’s `output/forecast.json`. Pass `--home <project-folder>` to select another
 worker project, or `--input <path>` to open another forecast file. Removed places

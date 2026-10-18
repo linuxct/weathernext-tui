@@ -1,0 +1,18 @@
+# Generated cross-build outputs
+/dist/
+
+# Keep the standalone UI repository free of the Python backend and its data.
+*.py
+__pycache__/
+.venv/
+.local/
+/output/
+/weathercore/
+/forecast.py
+/requirements.txt
+
+# Local editor and operating-system files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

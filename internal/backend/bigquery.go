@@ -262,7 +262,11 @@ func (g *googleAPI) request(ctx context.Context, method, endpoint string, input,
 func queryParamString(value any) string {
 	switch typed := value.(type) {
 	case time.Time:
-		return typed.UTC().Format(time.RFC3339Nano)
+		// BigQuery's TIMESTAMP parameter parser accepts at most microsecond
+		// precision. time.Now() carries nanoseconds, which otherwise produces
+		// values such as 2026-10-16T13:04:20.814626213Z and is rejected as an
+		// unparseable TIMESTAMP.
+		return typed.UTC().Truncate(time.Microsecond).Format(time.RFC3339Nano)
 	case bool:
 		return strconv.FormatBool(typed)
 	case float64:
